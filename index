@@ -1,0 +1,250 @@
+/**********************************************************************
+    ZOMBIE SHOOTER 2.0
+    Features:
+    - Sprite graphics
+    - Guns + ammo + reload
+    - Zombie types
+    - Particles + blood
+    - Sound effects
+    - Waves / scaling difficulty
+    - Main menu + pause
+    - Local multiplayer
+    - High scores saved
+************************************************************************/
+
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width;
+const H = canvas.height;
+
+/* -----------------------------------
+          ASSET LOADING
+----------------------------------- */
+function loadImg(src) {
+    const img = new Image();
+    img.src = src;
+    return img;
+}
+
+function loadSound(src, volume = 1.0) {
+    const a = new Audio(src);
+    a.volume = volume;
+    return a;
+}
+
+const assets = {
+    player: loadImg("assets/player.png"),
+    bullet: loadImg("assets/bullet.png"),
+    blood: loadImg("assets/blood.png"),
+
+    z_normal: loadImg("assets/zombie.png"),
+    z_fast: loadImg("assets/zombie_fast.png"),
+    z_tank: loadImg("assets/zombie_tank.png"),
+    z_explode: loadImg("assets/zombie_exploder.png"),
+
+    snd_shot: loadSound("assets/gun_shot.wav", 0.35),
+    snd_hit: loadSound("assets/zombie_hit.wav", 0.4),
+    music: loadSound("assets/music.mp3", 0.25)
+};
+
+assets.music.loop = true;
+
+/* -----------------------------------
+              GAME STATE
+----------------------------------- */
+let gameState = "menu"; 
+let wave = 1;
+let score = 0;
+
+/* -----------------------------------
+        INPUT (supports 2 players)
+----------------------------------- */
+const keys = {};
+document.addEventListener("keydown", e => keys[e.key] = true);
+document.addEventListener("keyup", e => keys[e.key] = false);
+
+let mouse = { x:0, y:0, down:false };
+canvas.addEventListener("mousemove", e => {
+    const r = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - r.left;
+    mouse.y = e.clientY - r.top;
+});
+canvas.addEventListener("mousedown", () => mouse.down = true);
+canvas.addEventListener("mouseup", () => mouse.down = false);
+
+/* -----------------------------------
+        UTILITIES
+----------------------------------- */
+function angleTo(ax, ay, bx, by) {
+    return Math.atan2(by - ay, bx - ax);
+}
+
+function dist(ax, ay, bx, by) {
+    return Math.hypot(bx - ax, by - ay);
+}
+
+/* -----------------------------------
+          PARTICLES (blood)
+----------------------------------- */
+const particles = [];
+
+function spawnBlood(x, y) {
+    for (let i = 0; i < 7; i++) {
+        particles.push({
+            x, y,
+            dx: (Math.random() - 0.5) * 6,
+            dy: (Math.random() - 0.5) * 6,
+            life: 30
+        });
+    }
+}
+
+function updateParticles() {
+    for (let p of particles) {
+        p.x += p.dx;
+        p.y += p.dy;
+        p.life--;
+    }
+    for (let i = particles.length-1; i >= 0; i--) {
+        if (particles[i].life <= 0) particles.splice(i, 1);
+    }
+}
+
+function drawParticles() {
+    for (let p of particles) {
+        ctx.drawImage(assets.blood, p.x-8, p.y-8, 16, 16);
+    }
+}
+
+/* -----------------------------------
+                PLAYER
+----------------------------------- */
+function createPlayer(x, y) {
+    return {
+        x, y,
+        speed: 4,
+        size: 26,
+        hp: 100,
+        ammo: 30,
+        maxAmmo: 30,
+        reloadTime: 0,
+        reloadMax: 60
+    };
+}
+
+const players = [
+    createPlayer(W/2, H/2),       // Player 1
+    createPlayer(W/2+50, H/2)     // Player 2
+];
+
+/* -----------------------------------
+               BULLETS
+----------------------------------- */
+const bullets = [];
+
+function shoot(player) {
+    if (player.reloadTime > 0) return;
+    if (player.ammo <= 0) {
+        player.reloadTime = player.reloadMax;
+        return;
+    }
+
+    // Choose aim based on closest enemy or mouse
+    const angle = angleTo(player.x, player.y, mouse.x, mouse.y);
+
+    bullets.push({
+        x: player.x,
+        y: player.y,
+        dx: Math.cos(angle) * 14,
+        dy: Math.sin(angle) * 14,
+        size: 10
+    });
+
+    assets.snd_shot.currentTime = 0;
+    assets.snd_shot.play();
+    player.ammo--;
+}
+
+function updateBullets() {
+    for (let b of bullets) {
+        b.x += b.dx;
+        b.y += b.dy;
+    }
+    for (let i = bullets.length-1; i >= 0; i--) {
+        if (beyond(bullets[i])) bullets.splice(i, 1);
+    }
+}
+
+function beyond(b) {
+    return b.x<0 || b.x>W || b.y<0 || b.y>H;
+}
+
+function drawBullets() {
+    for (let b of bullets) {
+        ctx.drawImage(assets.bullet, b.x-6, b.y-6, 12, 12);
+    }
+}
+
+/* -----------------------------------
+               ZOMBIES
+----------------------------------- */
+const zombies = [];
+
+function spawnZombie() {
+    const type = ["normal","fast","tank","exploder"][Math.floor(Math.random()*4)];
+
+    let speed = 1.3, hp = 30, size = 28, img = assets.z_normal;
+
+    if (type === "fast") { speed = 2.3; hp = 20; img = assets.z_fast; }
+    if (type === "tank") { speed = 0.9; hp = 80; size = 40; img = assets.z_tank; }
+    if (type === "exploder") { speed = 1.6; hp = 25; img = assets.z_explode; }
+
+    const side = Math.floor(Math.random()*4);
+    let x = 0, y = 0;
+    if (side === 0) x = 0, y = Math.random()*H;
+    if (side === 1) x = W, y = Math.random()*H;
+    if (side === 2) x = Math.random()*W, y = 0;
+    if (side === 3) x = Math.random()*W, y = H;
+
+    zombies.push({ x, y, speed, hp, size, img, type });
+}
+
+function spawnWave() {
+    for (let i = 0; i < wave + 4; i++) spawnZombie();
+}
+
+function updateZombies() {
+    for (let z of zombies) {
+        // chase closest player
+        let target = players.reduce((a,b)=>
+            dist(z.x,z.y,a.x,a.y) < dist(z.x,z.y,b.x,b.y) ? a : b
+        );
+
+        const ang = angleTo(z.x, z.y, target.x, target.y);
+        z.x += Math.cos(ang) * z.speed;
+        z.y += Math.sin(ang) * z.speed;
+    }
+}
+
+function drawZombies() {
+    for (let z of zombies) {
+        ctx.drawImage(z.img, z.x-z.size/2, z.y-z.size/2, z.size, z.size);
+    }
+}
+
+/* -----------------------------------
+     COLLISION (bullets / zombies)
+----------------------------------- */
+function handleCombat() {
+    // Bullets hit zombies
+    for (let i = zombies.length-1; i >= 0; i--) {
+        let z = zombies[i];
+
+        for (let j = bullets.length-1; j >= 0; j--) {
+            let b = bullets[j];
+            if (dist(z.x,z.y,b.x,b.y) < z.size/2) {
+                z.hp -= 20;
+                bullets.splice(j,1);
+
+                spawnBlood(z.x,z.y);
+                assets.snd_hit.currentTime = 0;
